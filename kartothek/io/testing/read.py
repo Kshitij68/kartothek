@@ -32,6 +32,9 @@ The following fixtures should be present (see tests.read.conftest)
 
 
 import datetime
+import storefact
+import tempfile
+
 from functools import wraps
 from itertools import permutations
 
@@ -40,9 +43,10 @@ import pandas.testing as pdt
 import pytest
 
 from kartothek.core.uuid import gen_uuid
-from kartothek.io.eager import store_dataframes_as_dataset
+from kartothek.io.eager import store_dataframes_as_dataset, build_dataset_indices
 from kartothek.io.iter import store_dataframes_as_dataset__iter
 from kartothek.io_components.metapartition import MetaPartition
+from kartothek.io.dask.delayed import read_dataset_as_delayed
 
 
 @pytest.fixture(
@@ -692,3 +696,21 @@ def test_binary_column_metadata(store_factory, bound_load_dataframes):
 
     # Assert column names are of type `str`, instead of `bytes` objects
     assert set(df.columns.map(type)) == {str}
+
+
+def test_predicates_in_conjunction_with_dispatch_by():
+    folder = tempfile.mkdtemp(prefix="ktk_test_")
+    s = storefact.get_store_from_url(f"hfs://{folder}")
+    df = pd.DataFrame({"a": range(10), "b": [0, 1] * 5, "c": [0, 1, 2, 3, 4] * 2})
+    store_dataframes_as_dataset(s, "test", [df], partition_on=["c"])
+    build_dataset_indices(lambda: s, "test", ["b"])
+
+    # raise Exception(len(read_dataset_as_delayed(
+    #     dataset_uuid="test",
+    #     store=lambda: s,
+    #     predicates=[[("b", "in", [1])]])) == 5)
+    raise Exception(len(read_dataset_as_delayed(
+        dataset_uuid="test",
+        store=lambda: s,
+        predicates=[[("b", "in", [1])]],
+        dispatch_by=['b'])))

@@ -30,7 +30,7 @@ def dispatch_metapartitions_from_factory(
     predicates=None,
     store=None,
     dispatch_by=None,
-) -> Union[Iterator[MetaPartition], Iterator[List[MetaPartition]]]:
+):
     if not callable(dataset_factory) and not isinstance(
         dataset_factory, DatasetFactory
     ):
@@ -57,21 +57,25 @@ def dispatch_metapartitions_from_factory(
         )
 
     if predicates is not None:
-        dataset_factory, allowed_labels = _allowed_labels_by_predicates(
-            predicates, dataset_factory, dispatch_by
-        )
+        dataset_factory, allowed_labels = _allowed_labels_by_predicates(predicates, dataset_factory)
     else:
         allowed_labels = None
-
     indices_to_dispatch = {
         name: ix.copy(index_dct={})
         for name, ix in dataset_factory.indices.items()
         if isinstance(ix, ExplicitSecondaryIndex)
     }
-
+    import logging
+    logging.exception(f"Indices to dispatch are {indices_to_dispatch}")
+    logging.exception(f"Dataset factory is {dataset_factory}")
+    logging.exception(f"Allowed Labels are {allowed_labels}")
+    logging.exception(f" Predicates are {predicates}")
+    logging.exception(f" Allowed Labels are {allowed_labels}")
+    logging.exception(f" Dispatch by is {dispatch_by}")
     if dispatch_by:
         # Build up a DataFrame that contains per row a Partition and its primary index columns.
         base_df = None
+        logging.exception(f"Entered this function")
         for part_key in dispatch_by:
             dataset_factory.load_index(part_key)
             idx = dataset_factory.indices[part_key].index_dct
@@ -80,22 +84,36 @@ def dispatch_metapartitions_from_factory(
                 base_df = df
             else:
                 base_df = base_df.merge(df, on=["__partition__"])
-
+        logging.exception(f"Reached here")
         assert base_df is not None
         base_df = cast(pd.DataFrame, base_df)
-
+        logging.exception(f"What the fuck is happening")
         # Group the resulting MetaParitions by partition keys or a subset of those keys
         merged_partitions = base_df.groupby(
             by=list(dispatch_by), sort=False, as_index=False
         )
+        logging.exception("Please reach till here")
+        # logging.exception(f"Merged partitions are {merged_partitions}")
         for group_name, group in merged_partitions:
             if not isinstance(group_name, tuple):
                 group_name = (group_name,)
             mps = []
-            logical_conjunction = list(
-                zip(dispatch_by, ["=="] * len(dispatch_by), group_name)
-            )
+            # logical_conjunction = list(
+            #     zip(dispatch_by, ["=="] * len(dispatch_by), group_name)
+            # )
+            # logging.exception(f"The logical_conjunction is {logical_conjunction}")
             for label in group.__partition__:
+                # mps.append(
+                #     MetaPartition.from_partition(
+                #         partition=dataset_factory.partitions[label],
+                #         dataset_metadata=dataset_factory.metadata,
+                #         indices=indices_to_dispatch,
+                #         metadata_version=dataset_factory.metadata_version,
+                #         table_meta=dataset_factory.table_meta,
+                #         partition_keys=dataset_factory.partition_keys,
+                #         logical_conjunction=logical_conjunction,
+                #     )
+                # )
                 mps.append(
                     MetaPartition.from_partition(
                         partition=dataset_factory.partitions[label],
@@ -103,8 +121,7 @@ def dispatch_metapartitions_from_factory(
                         indices=indices_to_dispatch,
                         metadata_version=dataset_factory.metadata_version,
                         table_meta=dataset_factory.table_meta,
-                        partition_keys=dataset_factory.partition_keys,
-                        logical_conjunction=logical_conjunction,
+                        partition_keys=dataset_factory.partition_keys
                     )
                 )
             yield mps
@@ -122,7 +139,6 @@ def dispatch_metapartitions_from_factory(
                     continue
 
             part = dataset_factory.partitions[part_label]
-
             yield MetaPartition.from_partition(
                 partition=part,
                 dataset_metadata=dataset_factory.metadata,
@@ -133,7 +149,7 @@ def dispatch_metapartitions_from_factory(
             )
 
 
-def _allowed_labels_by_predicates(predicates, dataset_factory, dispatch_by):
+def _allowed_labels_by_predicates(predicates, dataset_factory):
     if len(predicates) == 0:
         raise ValueError("The behaviour on an empty list of predicates is undefined")
 

@@ -293,6 +293,9 @@ def read_dataset_as_delayed_metapartitions(
         load_dataset_metadata=load_dataset_metadata,
     )
     store = ds_factory.store_factory
+    import logging
+    logging.exception(f"Predicates in read_dataset_as_delayed_metapartitions are {predicates}")
+    logging.exception(f"Dispatch by is {dispatch_by}")
     mps = dispatch_metapartitions_from_factory(
         dataset_factory=ds_factory,
         concat_partitions_on_primary_index=concat_partitions_on_primary_index,
@@ -302,6 +305,17 @@ def read_dataset_as_delayed_metapartitions(
     )
 
     if concat_partitions_on_primary_index or dispatch_by:
+        # mps = map_delayed(
+        #     mps,
+        #     MetaPartition.load_dataframes,
+        #     store=store,
+        #     tables=tables,
+        #     columns=columns,
+        #     categoricals=categoricals,
+        #     predicate_pushdown_to_io=predicate_pushdown_to_io,
+        #     dates_as_object=dates_as_object,
+        #     predicates=predicates,
+        # )
         mps = _load_and_concat_metapartitions(
             mps,
             store=store,
@@ -342,7 +356,6 @@ def read_dataset_as_delayed_metapartitions(
     return mps
 
 
-@default_docs
 def read_dataset_as_delayed(
     dataset_uuid=None,
     store=None,
@@ -364,6 +377,9 @@ def read_dataset_as_delayed(
     Parameters
     ----------
     """
+    import logging
+    logging.exception(f"Predicates are {predicates}")
+    logging.exception(f"dispatch_by is {dispatch_by}")
     mps = read_dataset_as_delayed_metapartitions(
         dataset_uuid=dataset_uuid,
         store=store,

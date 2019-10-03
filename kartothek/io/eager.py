@@ -473,7 +473,7 @@ def store_dataframes_as_dataset(
 
     Parameters
     ----------
-    dfs : dict of pd.DataFrame or pd.DataFrame
+    dfs : dict of pd.DataFrame or pd.DataFrame or list(pd.DataFrame)
         The dataframe(s) to be stored. If only a single dataframe is passed, it will be stored as the `core` table.
 
     Returns

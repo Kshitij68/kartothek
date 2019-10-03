@@ -1,15 +1,11 @@
 import pickle
 from functools import partial
 
-import pytest
-
 from kartothek.io.dask.delayed import (
-    read_dataset_as_delayed,
     read_dataset_as_delayed_metapartitions,
     read_table_as_delayed,
 )
 from kartothek.io.testing.read import *  # noqa
-
 
 @pytest.fixture(params=["dataframe", "metapartition", "table"])
 def output_type(request):
