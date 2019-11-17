@@ -328,7 +328,6 @@ def read_table(
 
 
 @default_docs
-@normalize_args
 def commit_dataset(
     store=None,
     dataset_uuid=None,
@@ -393,6 +392,9 @@ def commit_dataset(
         Input partition to be committed.
 
     """
+    partition_on = partition_on or list()
+    delete_scope = delete_scope or list()
+    secondary_indices = secondary_indices or list()
     if isinstance(new_partitions, NoDefault):
         raise TypeError("The parameter `new_partitions` is not optional")
     store = _make_callable(store)
