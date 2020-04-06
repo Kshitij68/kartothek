@@ -76,5 +76,6 @@ A Kartothek (or more modern: Zettelkasten/Katalogkasten) is a tool to organize
    :hidden:
 
    Module Reference <_rst/modules>
+   Presentations on Kartothek <presentations>
    Versioning <versioning>
    Changelog <changes>
