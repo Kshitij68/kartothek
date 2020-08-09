@@ -343,18 +343,17 @@ class IndexBase(CopyMixin):
         inplace: bool, (default: False)
             If `True` the operation is performed inplace and will return the same object
         """
-        partitions_to_delete = list_of_partitions
-        if not partitions_to_delete:
+        if not list_of_partitions:
             return self
+        partitions_to_delete = set(list_of_partitions)
         if inplace:
-            values_to_remove = []
+            values_to_remove = set()
             for val, partition_list in self.index_dct.items():
-                for partition_label in partitions_to_delete:
-                    if partition_label in partition_list:
-                        partition_list.remove(partition_label)
-                    if len(partition_list) == 0:
-                        values_to_remove.append(val)
-                        break
+                new_partition_set = set(partition_list) - partitions_to_delete
+                if new_partition_set:
+                    self.index_dct[val][:] = new_partition_set
+                else:
+                    values_to_remove.add(val)
             for val in values_to_remove:
                 del self.index_dct[val]
             # Call the constructor again to reinit the creation timestamp
@@ -364,9 +363,9 @@ class IndexBase(CopyMixin):
         else:
             new_index_dict = {}
             for val, partition_list in self.index_dct.items():
-                new_list = set(partition_list) - set(partitions_to_delete)
-                if len(new_list) > 0:
-                    new_index_dict[val] = list(new_list)
+                new_partition_set = set(partition_list) - partitions_to_delete
+                if new_partition_set:
+                    new_index_dict[val] = list(new_partition_set)
             return self.copy(
                 column=self.column, index_dct=new_index_dict, dtype=self.dtype
             )
@@ -452,13 +451,34 @@ class IndexBase(CopyMixin):
         Parameters
         ----------
         compact:
-            If True, the index will be unique and the Series.values will be a list of partitions/values
+            If True, ensures that the index will be unique. If there a multiple partition values per index, there values
+            will be compacted into a list (see Examples section).
         partitions_as_index:
-            If True, the relation between index values and partitions will be reverted for the output
+            If True, the relation between index values and partitions will be reverted for the output dataframe:
+            partition values will be used as index and the indices will be mapped to the partitions.
         predicates:
             A list of predicates. If a literal within the provided predicates
             references a column which is not part of this index, this literal is
             interpreted as True.
+
+        Examples:
+
+        .. code::
+        >>> index1 = ExplicitSecondaryIndex(
+        ...     column="col", index_dct={1: ["part_1", "part_2"]}, dtype=pa.int64()
+        ... )
+        >>> index1
+            col
+            1    part_1
+            1    part_2
+        >>> index1.as_flat_series(compact=True)
+            col
+            1    [part_1, part_2]
+        >>> index1.as_flat_series(partitions_as_index=True)
+            partition
+            part_1    1
+            part_2    1
+
         """
         check_predicates(predicates)
         table = _index_dct_to_table(
@@ -733,7 +753,7 @@ _MULTI_COLUMN_INDEX_DCT_TYPE = Dict[str, IndexBase]
 
 
 def merge_indices(
-    list_of_indices: List[_MULTI_COLUMN_INDEX_DCT_TYPE]
+    list_of_indices: List[_MULTI_COLUMN_INDEX_DCT_TYPE],
 ) -> _MULTI_COLUMN_INDEX_DCT_TYPE:
     """
     Merge a list of index dictionaries
@@ -846,21 +866,46 @@ def _parquet_bytes_to_dict(column: str, index_buffer: bytes):
 
 
 def _index_dct_to_table(index_dct: IndexDictType, column: str, dtype: pa.DataType):
-    keys = index_dct.keys()
-    if (dtype is None) and (len(keys) > 0):
-        probe = next(iter(keys))
+    keys_it = index_dct.keys()
+
+    # find possible type probe
+    if len(keys_it) > 0:
+        probe = next(iter(keys_it))
+        has_probe = True
+    else:
+        probe = None
+        has_probe = False
+
+    # type inference
+    if (dtype is None) and has_probe:
         if isinstance(probe, np.datetime64):
             dtype = pa.timestamp(
                 "ns"
             )  # workaround pyarrow type inference bug (ARROW-2554)
         elif isinstance(probe, pd.Timestamp):
-            keys = [d.to_datetime64() for d in keys]
             dtype = pa.timestamp(
                 "ns"
             )  # workaround pyarrow type inference bug (ARROW-2554)
-        elif isinstance(probe, np.bool_):
-            keys = [bool(d) for d in keys]
+        elif isinstance(probe, (np.bool_, bool)):
+            dtype = pa.bool_()
 
+    # fix pyarrow input
+    if dtype is None:
+        keys = np.asarray(list(keys_it))
+    else:
+        if pa.types.is_unsigned_integer(dtype):
+            # numpy might create object ndarrays here, which pyarrow might (for some reason) convert fo floats
+            keys = list(keys_it)
+        elif (
+            dtype == pa.timestamp("ns")
+            and has_probe
+            and isinstance(probe, pd.Timestamp)
+        ):
+            keys = np.asarray([d.to_datetime64() for d in keys_it])
+        else:
+            keys = np.asarray(list(keys_it))
+
+    # TODO: Remove work-around
     # This is because of ARROW-1646:
     #   [Python] pyarrow.array cannot handle NumPy scalar types
     # Additional note: pyarrow.array is supposed to infer type automatically.
@@ -870,7 +915,6 @@ def _index_dct_to_table(index_dct: IndexDictType, column: str, dtype: pa.DataTyp
         # the np.array dtype will be double which arrow cannot convert to the target type, so use an empty list instead
         labeled_array = pa.array([], type=dtype)
     else:
-        keys = np.array(list(keys))
         labeled_array = pa.array(keys, type=dtype)
 
     partition_array = pa.array(list(index_dct.values()))

@@ -2,6 +2,105 @@
 Changelog
 =========
 
+Version 3.13.1 (2020-08-04)
+===========================
+* Fix evaluation of "OR"-connected predicates (#295)
+
+
+Version 3.13.0 (2020-07-30)
+===========================
+
+Improvements
+^^^^^^^^^^^^
+
+* Update timestamp related code into Ktk Discover Cube functionality.
+* Support backward compatibility to old cubes and fix for cli entry point.
+
+Version 3.12.0 (2020-07-23)
+===========================
+
+New functionality
+^^^^^^^^^^^^^^^^^
+
+* Introduction of ``cube`` Functionality which is made with multiple Kartothek datasets.
+* Basic Features - Extend, Query, Remove(Partitions),
+  Delete (can delete entire datasets/cube), API, CLI, Core and IO features.
+* Advanced Features - Multi-Dataset with Single Table, Explicit physical Partitions, Seed based join system.
+
+Version 3.11.0 (2020-07-15)
+===========================
+
+New functionality
+^^^^^^^^^^^^^^^^^
+
+* Add :meth:`~kartothek.io_components.metapartition.MetaPartition.get_parquet_metadata` and :func:`~kartothek.io.dask.dataframe.collect_dataset_metadata`, enabling users to collect information about the Parquet metadata of a dataset (#306)
+
+Bug fixes
+^^^^^^^^^
+
+* Performance of dataset update with ``delete_scope`` significantly improved for datasets with many partitions (#308)
+
+
+Version 3.10.0 (2020-07-02)
+===========================
+
+Improvements
+^^^^^^^^^^^^
+* Dispatch performance improved for large datasets including metadata
+* Introduction of ``dispatch_metadata`` kwarg to metapartitions read pipelines
+  to allow for transition for future breaking release.
+
+Bug fixes
+^^^^^^^^^
+
+* Ensure that the empty (sentinel) DataFrame used in :func:`~kartothek.io.eager.read_table`
+  also has the correct behaviour when using the ``categoricals`` argument.
+
+
+Breaking changes in ``io_components.read``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* The ``dispatch_metapartitions`` and ``dispatch_metapartitions_from_factory``
+  will no longer attach index and metadata information to the created MP
+  instances, unless explicitly requested.
+
+
+Version 3.9.0 (2020-06-03)
+==========================
+
+Improvements
+^^^^^^^^^^^^
+* Arrow 0.17.X support
+* Significant performance improvements for shuffle operations in
+  :func:`~kartothek.io.dask.dataframe.update_dataset_from_ddf`
+  for large dask.DataFrames with many payload columns by using in-memory
+  compression during the shuffle operation.
+* Allow calling :func:`~kartothek.io.dask.dataframe.update_dataset_from_ddf`
+  without `partition_on` when `shuffle=True`.
+* :func:`~kartothek.io.dask.dataframe.read_dataset_as_ddf` supports kwarg ``dispatch_by``
+  to control the internal partitioning structure when creating a dataframe.
+* :func:`~kartothek.io.dask.dataframe.read_dataset_as_ddf` and :func:`~kartothek.io.dask.dataframe.update_dataset_from_ddf`
+  now allow the keyword ``table`` to be optional, using the default SINGLE_TABLE identifier.
+  (recommended since the multi table dataset support is in sunset).
+
+
+Version 3.8.2 (2020-04-09)
+==========================
+
+Improvements
+^^^^^^^^^^^^
+
+* Read performance improved for, especially for partitioned datasets and queries with empty payload columns.
+
+Bug fixes
+^^^^^^^^^
+* GH262: Raise an exception when trying to partition on a column with null values to prevent silent data loss
+* Fix multiple index creation issues (cutting data, crashing) for ``uint`` data
+* Fix index update issues for some types resulting in ``TypeError: Trying to update an index with different types...``
+  messages.
+* Fix issues where index creation with empty partitions can lead to ``ValueError: Trying to create non-typesafe index``
+
+
 Version 3.8.1 (2020-03-20)
 ==========================
 

@@ -32,26 +32,18 @@ The following fixtures should be present (see tests.read.conftest)
 
 
 import datetime
-from functools import wraps
+from distutils.version import LooseVersion
 from itertools import permutations
 
 import pandas as pd
 import pandas.testing as pdt
+import pyarrow as pa
 import pytest
 
 from kartothek.core.uuid import gen_uuid
 from kartothek.io.eager import store_dataframes_as_dataset
 from kartothek.io.iter import store_dataframes_as_dataset__iter
 from kartothek.io_components.metapartition import SINGLE_TABLE, MetaPartition
-
-
-@pytest.fixture(
-    params=["dataframe", "metapartition", "table"],
-    ids=["dataframe", "metapartition", "table"],
-)
-def output_type(request):
-    # TODO: get rid of this parametrization and split properly into two functions
-    return request.param
 
 
 @pytest.fixture(params=[True, False], ids=["use_categoricals", "no_categoricals"])
@@ -85,21 +77,6 @@ def custom_read_parameters():
 @pytest.fixture(params=[True, False], ids=["use_factory", "no_factory"])
 def use_dataset_factory(request, dates_as_object):
     return request.param
-
-
-@pytest.fixture()
-def bound_load_metapartitions():
-    raise pytest.skip("Needs to implemented by submodule")
-
-
-@pytest.fixture()
-def bound_load_dataframes(bound_load_metapartitions):
-    @wraps(bound_load_metapartitions)
-    def _inner(*args, **kwargs):
-        mps = bound_load_metapartitions(*args, **kwargs)
-        return [mp.data for mp in mps]
-
-    return _inner
 
 
 def _strip_unused_categoricals(df):
@@ -535,18 +512,6 @@ def test_read_dataset_as_dataframes(
     )
 
 
-def test_load_dataset_metadata(
-    dataset, store_session_factory, bound_load_metapartitions
-):
-    result = bound_load_metapartitions(
-        dataset_uuid=dataset.uuid,
-        store=store_session_factory,
-        load_dataset_metadata=True,
-    )
-    for mp in result:
-        assert set(mp.dataset_metadata.keys()) == {"creation_time", "dataset"}
-
-
 def test_read_dataset_as_dataframes_columns_projection(
     store_factory, bound_load_dataframes, metadata_version
 ):
@@ -726,3 +691,35 @@ def test_binary_column_metadata(store_factory, bound_load_dataframes):
 
     # Assert column names are of type `str`, instead of `bytes` objects
     assert set(df.columns.map(type)) == {str}
+
+
+@pytest.mark.xfail(
+    LooseVersion(pa.__version__) < "0.16.1.dev308",
+    reason="pa.Schema.from_pandas cannot deal with ExtensionDtype",
+)
+def test_extensiondtype_rountrip(store_factory, bound_load_dataframes):
+    table_name = SINGLE_TABLE
+    df = {
+        "label": "part1",
+        "data": [
+            (table_name, pd.DataFrame({"str": pd.Series(["a", "b"], dtype="string")}))
+        ],
+    }
+
+    store_dataframes_as_dataset(
+        dfs=[df], store=store_factory, dataset_uuid="dataset_uuid"
+    )
+
+    result = bound_load_dataframes(
+        dataset_uuid="dataset_uuid", store=store_factory, tables=table_name
+    )
+
+    probe = result[0]
+    if isinstance(probe, MetaPartition):
+        result_dfs = [mp.data[table_name] for mp in result]
+    elif isinstance(probe, dict):
+        result_dfs = [mp[table_name] for mp in result]
+    else:
+        result_dfs = result
+    result_df = pd.concat(result_dfs).reset_index(drop=True)
+    pdt.assert_frame_equal(df["data"][0][1], result_df)

@@ -187,3 +187,54 @@ def test_filter_df_from_predicates_bool(op, col):
         df[col] = df[col].astype(df[col].cat.as_ordered().dtype)
     expected = eval(f"df[df[col] {op} value]")
     pdt.assert_frame_equal(actual, expected, check_categorical=False)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        1,
+        np.uint8(1),
+        1.1,
+        "A",
+        datetime.date(2020, 1, 1),
+        pd.Timestamp("2020-01-01"),
+        np.datetime64("2020-01-01"),
+    ],
+)
+def test_filter_df_from_predicates_empty_in(value):
+    df = pd.DataFrame({"A": [value]})
+    df["B"] = range(len(df))
+
+    predicates = [[("A", "in", [])]]
+    actual = filter_df_from_predicates(df, predicates)
+    expected = df.iloc[[]]
+    pdt.assert_frame_equal(actual, expected, check_categorical=False)
+
+
+def test_filter_df_from_predicates_or_predicates():
+    df = pd.DataFrame({"A": range(10), "B": ["A", "B"] * 5, "C": range(-10, 0)})
+
+    predicates = [[("A", "<", 3)], [("A", ">", 5)], [("B", "==", "non-existent")]]
+    actual = filter_df_from_predicates(df, predicates)
+    expected = pd.DataFrame(
+        data={
+            "A": [0, 1, 2, 6, 7, 8, 9],
+            "B": ["A", "B", "A", "A", "B", "A", "B"],
+            "C": [-10, -9, -8, -4, -3, -2, -1],
+        },
+        index=[0, 1, 2, 6, 7, 8, 9],
+    )
+    pdt.assert_frame_equal(actual, expected)
+
+    predicates = [[("A", "<", 3)], [("A", ">", 5)], [("B", "==", "B")]]
+    actual = filter_df_from_predicates(df, predicates)
+    # row for (A == 4) is filtered out
+    expected = pd.DataFrame(
+        data={
+            "A": [0, 1, 2, 3, 5, 6, 7, 8, 9],
+            "B": ["A", "B", "A", "B", "B", "A", "B", "A", "B"],
+            "C": [-10, -9, -8, -7, -5, -4, -3, -2, -1],
+        },
+        index=[0, 1, 2, 3, 5, 6, 7, 8, 9],
+    )
+    pdt.assert_frame_equal(actual, expected)

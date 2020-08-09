@@ -199,11 +199,7 @@ def test_update_dataset_with_partitions__reducer_partitions(
     assert set(store_factory().keys()) == set()
 
     df1 = pd.DataFrame(
-        {
-            "P": [1, 2, 3, 1, 2, 3],
-            "L": [1, 1, 1, 1, 1, 1],
-            "TARGET": pd.np.arange(10, 16),
-        }
+        {"P": [1, 2, 3, 1, 2, 3], "L": [1, 1, 1, 1, 1, 1], "TARGET": np.arange(10, 16)}
     )
     df2 = df1.copy(deep=True)
     df2.L = 2
@@ -482,7 +478,7 @@ def test_sort_partitions_by(
         {
             "P": [1, 2, 3, 1, 2, 3],
             "L": [1, 1, 1, 1, 1, 1],
-            "TARGET": list(reversed(pd.np.arange(10, 16))),
+            "TARGET": list(reversed(np.arange(10, 16))),
         }
     )
 
@@ -664,3 +660,24 @@ def test_update_first_time_with_secondary_indices(
         dataset_uuid=dataset_uuid,
         secondary_indices=dataset_update_secondary_indices,
     )
+
+
+def test_partition_on_null(store_factory, bound_update_dataset):  # gh-262
+    keys = ["a", "b", "c", np.nan]
+    values = range(len(keys))
+    d = dict(zip(keys, values))
+    df = (
+        pd.DataFrame.from_dict(d, orient="index")
+        .reset_index()
+        .rename(columns={"index": "part", 0: "value"})
+    )
+
+    with pytest.raises(
+        Exception, match=r"Original dataframe size .* on a column with null values.",
+    ):
+        bound_update_dataset(
+            [{"data": {"table": df}}],
+            store=store_factory,
+            dataset_uuid="a_unique_dataset_identifier",
+            partition_on=["part"],
+        )

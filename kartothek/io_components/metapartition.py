@@ -7,14 +7,15 @@ import logging
 import os
 import time
 import warnings
-from collections import Iterable, Iterator, defaultdict, namedtuple
+from collections import Iterable, defaultdict, namedtuple
 from copy import copy
 from functools import wraps
-from typing import Any, Dict, Optional, cast
+from typing import Any, Callable, Dict, Iterator, Optional, cast
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+from simplekv import KeyValueStore
 
 from kartothek.core import naming
 from kartothek.core._compat import ARROW_LARGER_EQ_0150
@@ -50,6 +51,17 @@ SINGLE_TABLE = "table"
 
 _Literal = namedtuple("_Literal", ["column", "op", "value"])
 _SplitPredicate = namedtuple("_SplitPredicate", ["key_part", "content_part"])
+
+_METADATA_SCHEMA = {
+    "partition_label": np.dtype("O"),
+    "row_group_id": np.dtype(int),
+    "row_group_compressed_size": np.dtype(int),
+    "row_group_uncompressed_size": np.dtype(int),
+    "number_rows_total": np.dtype(int),
+    "number_row_groups": np.dtype(int),
+    "serialized_size": np.dtype(int),
+    "number_rows_per_row_group": np.dtype(int),
+}
 
 
 def _predicates_to_named(predicates):
@@ -137,7 +149,7 @@ def _apply_to_list(method):
                         result = result.add_metapartition(mp, schema_validation=False)
         if not isinstance(result, MetaPartition):
             raise ValueError(
-                "Result for method {} is not a `MetaPartition` but".format(
+                "Result for method {} is not a `MetaPartition` but {}".format(
                     method.__name__, type(method_return)
                 )
             )
@@ -589,6 +601,8 @@ class MetaPartition(Iterable):
         index_df = pd.DataFrame(index_df_dct)
 
         filtered_predicates = []
+        # We assume that indices on the partition level have been filtered out already in `dispatch_metapartitions`.
+        # `filtered_predicates` should only contain predicates that can be evaluated on parquet level
         for conjunction in split_predicates:
             predicates = [conjunction.key_part]
             if (
@@ -681,11 +695,7 @@ class MetaPartition(Iterable):
 
             # In case the columns only refer to the partition indices, we need to load at least a single column to
             # determine the length of the required dataframe.
-            if table_columns is None or (
-                table_columns is not None
-                and self.partition_keys
-                and set(table_columns) == set(self.partition_keys)
-            ):
+            if table_columns is None:
                 table_columns_to_io = None
             else:
                 table_columns_to_io = table_columns
@@ -701,9 +711,10 @@ class MetaPartition(Iterable):
                 # the conditition.
                 #
                 # We separate these predicates into their index and their Parquet part.
-                split_predicates, has_index_condition = self._split_predicates_in_index_and_content(
-                    predicates
-                )
+                (
+                    split_predicates,
+                    has_index_condition,
+                ) = self._split_predicates_in_index_and_content(predicates)
 
                 filtered_predicates = []
                 if has_index_condition:
@@ -716,11 +727,7 @@ class MetaPartition(Iterable):
                     ]
 
             # Remove partition_keys from table_columns_to_io
-            if (
-                self.partition_keys
-                and table_columns_to_io
-                and len(set(self.partition_keys) & set(table_columns_to_io)) > 0
-            ):
+            if self.partition_keys and table_columns_to_io is not None:
                 keys_to_remove = set(self.partition_keys) & set(table_columns_to_io)
                 # This is done to not change the ordering of the list
                 table_columns_to_io = [
@@ -764,7 +771,7 @@ class MetaPartition(Iterable):
                     )
 
                 if list(df.columns) != table_columns:
-                    df = df.loc[:, table_columns]
+                    df = df.reindex(columns=table_columns, copy=False)
             new_data[table] = df
         return self.copy(data=new_data)
 
@@ -792,13 +799,26 @@ class MetaPartition(Iterable):
         if len(key_indices) == 0:
             return df
 
-        index_cols = []
         original_columns = list(df.columns)
-        pd_index = pd.RangeIndex(stop=len(df))
         zeros = np.zeros(len(df), dtype=int)
         schema = self.table_meta[table]
 
-        for primary_key, value in key_indices:
+        # One of the few places `inplace=True` makes a signifcant difference
+        df.reset_index(drop=True, inplace=True)
+
+        index_names = [primary_key for primary_key, _ in key_indices]
+        # The index might already be part of the dataframe which is recovered from the parquet file.
+        # In this case, still use the reconstructed index col to have consistent index columns behavior.
+        # In this case the column in part of `original_columns` and must be removed to avoid duplication
+        # in the column axis
+        cleaned_original_columns = [
+            orig for orig in original_columns if orig not in index_names
+        ]
+        if cleaned_original_columns != original_columns:
+            # indexer call is slow, so only do that if really necessary
+            df = df.reindex(columns=cleaned_original_columns, copy=False)
+
+        for pos, (primary_key, value) in enumerate(key_indices):
             # If there are predicates, don't reconstruct the index if it wasn't requested
             if columns is not None and primary_key not in columns:
                 continue
@@ -830,33 +850,11 @@ class MetaPartition(Iterable):
                     cats = pd.Series(value).dt.date
                 else:
                     cats = [value]
-                cat = pd.Categorical.from_codes(zeros, categories=cats)
-                ind_col = pd.Series(cat, index=pd_index, name=primary_key)
+                value = pd.Categorical.from_codes(zeros, categories=cats)
             else:
-                ind_col = pd.Series(
-                    value, index=pd_index, dtype=dtype, name=primary_key
-                )
                 if convert_to_date:
-                    ind_col = ind_col.dt.date
-            index_cols.append(ind_col)
-
-        # One of the few places `inplace=True` makes a signifcant difference
-        df.reset_index(drop=True, inplace=True)
-
-        index_names = [col.name for col in index_cols]
-        # The index might already be part of the dataframe which is recovered from the parquet file.
-        # In this case, still use the reconstructed index col to have consistent index columns behavior.
-        # In this case the column in part of `original_columns` and must be removed to avoid duplication
-        # in the column axis
-        cleaned_original_columns = [
-            orig for orig in original_columns if orig not in index_names
-        ]
-        if cleaned_original_columns != original_columns:
-            # indexer call is slow, so only do that if really necessary
-            df = df.loc[:, cleaned_original_columns]
-
-        if len(index_cols) > 0:
-            df = pd.concat(index_cols + [df], axis=1, sort=False, join="inner")
+                    value = pd.Timestamp(value).to_pydatetime().date()
+            df.insert(pos, primary_key, value)
 
         return df
 
@@ -1249,10 +1247,27 @@ class MetaPartition(Iterable):
                     )
                 )
 
+            # There is at least one table with this column (see check above), so we can get the dtype from there. Also,
+            # shared dtypes are ensured to be compatible.
+            if ARROW_LARGER_EQ_0150:
+                dtype = list(
+                    meta.field(col).type
+                    for meta in self.table_meta.values()
+                    if col in meta.names
+                )[0]
+            else:
+                dtype = list(
+                    meta.field_by_name(col).type
+                    for meta in self.table_meta.values()
+                    if col in meta.names
+                )[0]
+
             new_index = ExplicitSecondaryIndex(
-                column=col, index_dct={value: [self.label] for value in possible_values}
+                column=col,
+                index_dct={value: [self.label] for value in possible_values},
+                dtype=dtype,
             )
-            if col in self.indices:
+            if (col in self.indices) and self.indices[col].loaded:
                 new_indices[col] = self.indices[col].update(new_index)
             else:
                 new_indices[col] = new_index
@@ -1365,7 +1380,13 @@ class MetaPartition(Iterable):
         ]
         dct = dict()
         empty_tables = []
+
         for table, df in self.data.items():
+            # Check that data sizes do not change. This might happen if the
+            # groupby below drops data, e.g. nulls
+            size_after = 0
+            size_before = len(df)
+
             # Implementation from pyarrow
             # See https://github.com/apache/arrow/blob/b33dfd9c6bd800308bb1619b237dbf24dea159be/python/pyarrow/parquet.py#L1030  # noqa: E501
 
@@ -1403,11 +1424,20 @@ class MetaPartition(Iterable):
                 if new_label not in dct:
                     dct[new_label] = {}
                 dct[new_label][table] = group
+                size_after += len(group)
+
+            if size_before != size_after:
+                raise ValueError(
+                    f"Original dataframe size ({size_before} rows) does not "
+                    f"match new dataframe size ({size_after} rows) for table {table}. "
+                    f"Hint: you may see this if you are trying to use `partition_on` on a column with null values."
+                )
 
         for label, table_dct in dct.items():
             for empty_table, df in empty_tables:
                 if empty_table not in table_dct:
                     table_dct[empty_table] = df.drop(labels=partition_on, axis=1)
+
         return dct
 
     @staticmethod
@@ -1532,6 +1562,84 @@ class MetaPartition(Iterable):
         for file_key in self.files.values():
             store.delete(file_key)
         return self.copy(files={}, data={}, metadata={})
+
+    def get_parquet_metadata(
+        self, store: Callable[[], KeyValueStore], table_name: str
+    ) -> pd.DataFrame:
+        """
+        Retrieve the parquet metadata for the MetaPartition.
+        Especially relevant for calculating dataset statistics.
+
+        Parameters
+        ----------
+        store
+          A factory function providing a KeyValueStore
+        table_name
+          Name of the kartothek table for which the statistics should be retrieved
+
+        Returns
+        -------
+        pd.DataFrame
+          A DataFrame with relevant parquet metadata
+        """
+        if not isinstance(table_name, str):
+            raise TypeError("Expecting a string for parameter `table_name`.")
+
+        if callable(store):
+            store = store()
+
+        data = {}
+        if table_name in self.files:
+            with store.open(self.files[table_name]) as fd:  # type: ignore
+                pq_metadata = pa.parquet.ParquetFile(fd).metadata
+            try:
+                metadata_dict = pq_metadata.to_dict()
+            except AttributeError:  # No data in file
+                metadata_dict = None
+                data = {
+                    "partition_label": self.label,
+                    "serialized_size": pq_metadata.serialized_size,
+                    "number_rows_total": pq_metadata.num_rows,
+                    "number_row_groups": pq_metadata.num_row_groups,
+                    "row_group_id": [0],
+                    "number_rows_per_row_group": [0],
+                    "row_group_compressed_size": [0],
+                    "row_group_uncompressed_size": [0],
+                }
+
+            if metadata_dict:
+                # Note: could just parse this entire dict into a pandas dataframe, w/o the below processing
+                data = {
+                    "partition_label": self.label,
+                    "serialized_size": metadata_dict["serialized_size"],
+                    "number_rows_total": metadata_dict["num_rows"],
+                    "number_row_groups": metadata_dict["num_row_groups"],
+                    "row_group_id": [],
+                    "number_rows_per_row_group": [],
+                    "row_group_compressed_size": [],
+                    "row_group_uncompressed_size": [],
+                }
+
+                for row_group_id, row_group_metadata in enumerate(
+                    metadata_dict["row_groups"]
+                ):
+                    data["row_group_id"].append(row_group_id)
+                    data["number_rows_per_row_group"].append(
+                        row_group_metadata["num_rows"]
+                    )
+                    data["row_group_compressed_size"].append(
+                        row_group_metadata["total_byte_size"]
+                    )
+                    data["row_group_uncompressed_size"].append(
+                        sum(
+                            col["total_uncompressed_size"]
+                            for col in row_group_metadata["columns"]
+                        )
+                    )
+
+        df = pd.DataFrame(data=data, columns=_METADATA_SCHEMA.keys())
+        df = df.astype(_METADATA_SCHEMA)
+        return df
 
 
 def _unique_label(label_list):

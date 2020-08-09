@@ -13,7 +13,7 @@ from kartothek.core.testing import get_dataframe_alltypes
 from kartothek.serialization import ParquetSerializer
 
 
-@pytest.fixture(params=["0.12.1", "0.13.0", "0.14.1", "0.15.0"])
+@pytest.fixture(params=["0.12.1", "0.13.0", "0.14.1", "0.15.0", "0.16.0"])
 def arrow_version(request):
     yield request.param
 
@@ -34,10 +34,8 @@ def test_arrow_compat(arrow_version, reference_store, mocker):
     Test if reading/writing across the supported arrow versions is actually
     compatible
 
-    Generate new reference files with::
-
-        import pyarrow as pa
-        ParquetSerializer().store(reference_store, pa.__version__, orig)
+    Generate new reference files by going to the `reference-data/arrow-compat` directory and
+    executing `generate_reference.py` or `batch_generate_reference.sh`.
     """
 
     uuid_hook = mocker.patch("kartothek.core.uuid._uuid_hook_object")
@@ -49,6 +47,8 @@ def test_arrow_compat(arrow_version, reference_store, mocker):
     restored = ParquetSerializer().restore_dataframe(
         store=reference_store, key=arrow_version + ".parquet", date_as_object=True
     )
-    if arrow_version == "0.14.1" and not ARROW_LARGER_EQ_0141:
+
+    if arrow_version in ("0.14.1", "0.15.0", "0.16.0") and not ARROW_LARGER_EQ_0141:
         orig = orig.astype({"null": float})
-        pdt.assert_frame_equal(orig, restored)
+
+    pdt.assert_frame_equal(orig, restored)
